@@ -21,9 +21,13 @@ WiFiUDP Udp;
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+#include <RtcUtility.h>
 #include <EepromAT24C32.h> // We will use clock's eeprom to store config
 
 // GLOBAL DEFINES
+#define WIFISSID "myhomenet"     // Default WiFi SSID
+#define WIFIPSK "myhomenetpswd"  // Default password
+#define WIFIRETRIES 5          // Max number of wifi retry attempts
 #define APSSID "GPSTimeServer" // Default AP SSID
 #define APPSK "thereisnospoon" // Default password
 #define PPS_PIN D6             // Pin on which 1PPS line is attached
@@ -48,7 +52,7 @@ WiFiUDP Udp;
 RtcDS3231<TwoWire> Rtc(Wire);
 EepromAt24c32<TwoWire> RtcEeprom(Wire);
 
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // OLED display library parameters
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // OLED display library parameters
 
 TinyGPS gps;
 SoftwareSerial ss(D7, D8); // Serial GPS handler
@@ -80,7 +84,8 @@ ESP8266WebServer server(80);
 
 word keytick = 0; // record time of keypress
 
-//#define DEBUG // Comment this in order to remove debug code from release version
+#define DEBUG // Comment this in order to remove debug code from release version
+#define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
@@ -122,9 +127,16 @@ void handleRoot()
   server.send(200, "text/html", "<h1>You are connected</h1>");
 }
 
-void enableWifi()
+void startHttpServer()
 {
-  // WiFi Initialization
+  server.on("/", handleRoot);
+  server.begin();
+  DEBUG_PRINTLN(F("HTTP server started"));
+}
+
+void enableWifiAP()
+{
+  // WiFi Initialization as an AP
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.mode(WIFI_AP);
   // WiFi.softAP(ssid, psk, channel, hidden, max_connection)
@@ -134,9 +146,31 @@ void enableWifi()
   IPAddress myIP = WiFi.softAPIP();
   DEBUG_PRINT(F("AP IP address: "));
   DEBUG_PRINTLN(myIP);
-  server.on("/", handleRoot);
-  server.begin();
-  DEBUG_PRINTLN(F("HTTP server started"));
+  startHttpServer();
+}
+
+void enableWifi()
+{
+  // Connect to WiFi
+  WiFi.mode(WIFI_STA);
+  DEBUG_PRINTLN("Connecting to WiFI");
+  WiFi.begin(WIFISSID, WIFIPSK);
+  int retries = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (retries < WIFIRETRIES)) {
+    retries++;
+    delay(500);
+    Serial.print(".");
+  }
+  if (retries > WIFIRETRIES) {
+    enableWifiAP();
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress myIP = WiFi.localIP();
+    DEBUG_PRINTLN(F("WiFi connected!"));
+    DEBUG_PRINT("IP address: ");
+    DEBUG_PRINTLN(myIP);
+    startHttpServer();
+  }
 }
 
 void disableWifi()
@@ -355,12 +389,12 @@ void ShowSyncFlag()
     resol = "0";
 
   u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
-  u8g2.drawGlyph(0, 21, 259);
-  u8g2.drawGlyph(64, 21, 263);
+  u8g2.drawGlyph(0, 16, 259);
+  u8g2.drawGlyph(64, 16, 263);
 
   u8g2.setFont(u8g2_font_logisoso16_tf); // choose a suitable font
-  u8g2.drawStr(18, 21, sats.c_str());
-  u8g2.drawStr(82, 21, resol.c_str());
+  u8g2.drawStr(18, 16, sats.c_str());
+  u8g2.drawStr(82, 16, resol.c_str());
 }
 
 void InitLCD()
@@ -379,7 +413,8 @@ void InitLCD()
 void SyncWithGPS()
 {
   int y;
-  byte h, m, s, mon, d, hundredths;
+  // byte h, m, s, mon, d, hundredths;
+  byte h, m, s, mon, d;
   unsigned long age;
   gps.crack_datetime(&y, &mon, &d, &h, &m, &s, NULL, &age); // get time from GPS
   // cheise @ Github spotted the uneccessary and wrong '> 3000' condition. Fixed - 20230206
@@ -441,7 +476,7 @@ void SyncCheck()
 // --------------------------------------------------------------------------------------------------
 // MAIN PROGRAM
 
-void ICACHE_RAM_ATTR isr() // INTERRUPT SERVICE REQUEST
+void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
 {
   pps = 1;                     // Flag the 1pps input signal
   digitalWrite(PPS_LED, HIGH); // Ligth up led pps monitor
@@ -450,7 +485,7 @@ void ICACHE_RAM_ATTR isr() // INTERRUPT SERVICE REQUEST
 }
 
 // Handle button pressed interrupt
-void ICACHE_RAM_ATTR btw() // INTERRUPT SERVICE REQUEST
+void IRAM_ATTR btw() // INTERRUPT SERVICE REQUEST
 {
   keytick = millis();
   DEBUG_PRINTLN(F("BUTTON PRESSED!"));
@@ -529,6 +564,9 @@ void FeedGpsParser()
     char c = ss.read(); // read in all available chars
     gps.encode(c);      // and feed chars to GPS parser
     //Serial.write(c); // Uncomment for some extra debug info if in doubt about GPS feed
+#ifdef DEBUG_GPS
+    DEBUG_PRINT(c);
+#endif
   }
 }
 
@@ -605,19 +643,19 @@ void processNTP()
 
     byte LIVNMODE = packetBuffer[0];
     Serial.print("  LI, Vers, Mode :");
-    Serial.print(packetBuffer[0], HEX);
+    Serial.print(LIVNMODE, HEX);
 
     byte STRATUM = packetBuffer[1];
     Serial.print("  Stratum :");
-    Serial.print(packetBuffer[1], HEX);
+    Serial.print(STRATUM, HEX);
 
     byte POLLING = packetBuffer[2];
     Serial.print("  Polling :");
-    Serial.print(packetBuffer[2], HEX);
+    Serial.print(POLLING, HEX);
 
     byte PRECISION = packetBuffer[3];
     Serial.print("  Precision :");
-    Serial.println(packetBuffer[3], HEX);
+    Serial.println(PRECISION, HEX);
 
     for (int z = 0; z < NTP_PACKET_SIZE; z++)
     {
@@ -651,7 +689,7 @@ void processNTP()
 
     //int year;
     //byte month, day, hour, minute, second, hundredths;
-    unsigned long date, time, age;
+    //unsigned long date, time, age;
     uint32_t timestamp, tempval;
     time_t t = now();
 
