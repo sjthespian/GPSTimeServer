@@ -729,22 +729,22 @@ void processNTP()
 #endif
 
     packetBuffer[0] = 0b00100100; // LI, Version, Mode
-    //packetBuffer[1] = 1 ;   // stratum
+    packetBuffer[1] = 1 ;   // stratum
     //think that should be at least 4 or so as you do not use fractional seconds
 
-    packetBuffer[1] = 4;    // stratum
+    //packetBuffer[1] = 4;    // stratum
     packetBuffer[2] = 6;    // polling minimum
     packetBuffer[3] = 0xFA; // precision
 
-    packetBuffer[7] = 0; // root delay
-    packetBuffer[8] = 0;
-    packetBuffer[9] = 8;
-    packetBuffer[10] = 0;
+    packetBuffer[4] = 0; // root delay
+    packetBuffer[5] = 0;
+    packetBuffer[6] = 8;
+    packetBuffer[7] = 0;
 
-    packetBuffer[11] = 0; // root dispersion
-    packetBuffer[12] = 0;
-    packetBuffer[13] = 0xC;
-    packetBuffer[14] = 0;
+    packetBuffer[8] = 0; // root dispersion
+    packetBuffer[9] = 0;
+    packetBuffer[10] = 0xC;
+    packetBuffer[11] = 0;
 
     //int year;
     //byte month, day, hour, minute, second, hundredths;
