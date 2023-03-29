@@ -7,6 +7,9 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 
+// For time on the web page
+#include <ctime>                // For formatting time
+
 // Needed for UDP functionality
 #include <WiFiUdp.h>
 // Time Server Port
@@ -17,6 +20,9 @@ byte packetBuffer[NTP_PACKET_SIZE];
 // An Ethernet UDP instance
 WiFiUDP Udp;
 
+// Syslog support
+#include <Syslog.h>
+
 /* Create a WiFi access point and provide a web server on it. */
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -25,9 +31,10 @@ WiFiUDP Udp;
 #include <EepromAT24C32.h> // We will use clock's eeprom to store config
 
 // GLOBAL DEFINES
-#define WIFISSID "myhomenet"     // Default WiFi SSID
-#define WIFIPSK "myhomenetpswd"  // Default password
-#define WIFIRETRIES 5          // Max number of wifi retry attempts
+#define HOSTNAME "ESP-NTP-Server" // Hostname used for syslog and DHCP
+#define WIFISSID "mywifi"      // Default WiFi SSID
+#define WIFIPSK "password"     // Default password
+#define WIFIRETRIES 15         // Max number of wifi retry attempts
 #define APSSID "GPSTimeServer" // Default AP SSID
 #define APPSK "thereisnospoon" // Default password
 #define PPS_PIN D6             // Pin on which 1PPS line is attached
@@ -36,6 +43,8 @@ WiFiUDP Udp;
 //#define RTC_UPDATE_INTERVAL    SECS_PER_DAY             // time(sec) between RTC SetTime events
 #define RTC_UPDATE_INTERVAL 30 // time(sec) between RTC SetTime events
 #define PPS_BLINK_INTERVAL 50  // Set time pps led should be on for blink effect
+#define SYSLOG_SERVER "syslog.example.com" // syslog server name or IP
+#define SYSLOG_PORT 514        // syslog port
 
 #define LOCK_LED D3
 #define PPS_LED 10
@@ -75,6 +84,11 @@ uint8_t statusWifi = 1;
 
 ESP8266WebServer server(80);
 
+// A UDP instance to let us send and receive packets over UDP
+WiFiUDP udpClient;
+// Create syslogt instance with LOG_DAEMON
+Syslog syslog(udpClient, SYSLOG_SERVER, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
+
 /*
  * ISR Debounce
  */
@@ -85,7 +99,7 @@ ESP8266WebServer server(80);
 word keytick = 0; // record time of keypress
 
 #define DEBUG // Comment this in order to remove debug code from release version
-#define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
@@ -124,7 +138,28 @@ boolean KeyCheck()
 
 void handleRoot()
 {
-  server.send(200, "text/html", "<h1>You are connected</h1>");
+  char webpage[1024];
+  char timestr[32];
+
+  // Build string for web UI
+  time_t t = now();     // get current time
+  tm *ptm = gmtime(&t);
+  strftime(timestr, 32, "%Y-%m-%d %H:%M:%S UTC", ptm);
+
+  int sats = (gps.satellites() != 255) ? gps.satellites() : 0;
+  String resol = gpsLocked ? String(gps.hdop()) : "";
+
+  // latitude & longitude
+  long lat = 0.0;
+  long lng = 0.0;
+  if (gpsLocked) {
+    gps.get_position(&lat, &lng);
+  }
+
+  sprintf(webpage,
+          "<html><head><title>NTP Server</title><meta http-equiv=\"refresh\" content=\"5\";></head><body><h1>%s</h1>Satellites: %d  Resolution: %s<h3>Location</h3>Latitude: %7.4f, Longitude: %7.4f<br/></body></html>",
+          timestr, sats, resol.c_str(), (float)lat/1000000, (float)lng/1000000);
+  server.send(200, "text/html", webpage);
 }
 
 void startHttpServer()
@@ -132,6 +167,7 @@ void startHttpServer()
   server.on("/", handleRoot);
   server.begin();
   DEBUG_PRINTLN(F("HTTP server started"));
+  syslog.log(LOG_INFO, "HTTP server started");
 }
 
 void enableWifiAP()
@@ -143,15 +179,19 @@ void enableWifiAP()
   // Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
   WiFi.softAP(ssid, password, 1, 0, 8);
 
+  
+#ifdef DEBUG
   IPAddress myIP = WiFi.softAPIP();
   DEBUG_PRINT(F("AP IP address: "));
   DEBUG_PRINTLN(myIP);
+#endif
   startHttpServer();
 }
 
 void enableWifi()
 {
   // Connect to WiFi
+  WiFi.setHostname(HOSTNAME);
   WiFi.mode(WIFI_STA);
   DEBUG_PRINTLN("Connecting to WiFI");
   WiFi.begin(WIFISSID, WIFIPSK);
@@ -165,10 +205,13 @@ void enableWifi()
     enableWifiAP();
   }
   if (WiFi.status() == WL_CONNECTED) {
+#ifdef DEBUG
     IPAddress myIP = WiFi.localIP();
     DEBUG_PRINTLN(F("WiFi connected!"));
     DEBUG_PRINT("IP address: ");
     DEBUG_PRINTLN(myIP);
+    syslog.logf(LOG_INFO, "WiFi connected as %s", myIP.toString().c_str());
+#endif
     startHttpServer();
   }
 }
@@ -177,6 +220,7 @@ void disableWifi()
 {
   server.stop();
   DEBUG_PRINTLN(F("HTTP server stopped"));
+  syslog.log(LOG_WARNING, "WiFi disabled!");
   WiFi.softAPdisconnect(true);
   WiFi.enableAP(false);
   WiFi.mode(WIFI_OFF);
@@ -249,8 +293,10 @@ void PrintRTCstatus()
     PrintTime(t);
 #endif
   }
-  else
+  else {
     DEBUG_PRINTLN("ERROR: cannot read the RTC.");
+    syslog.log(LOG_ERR, "ERROR: cannot read the RTC.");
+  }
 }
 
 // Update RTC from current system time
@@ -269,8 +315,10 @@ void SetRTC(time_t t)
     PrintTime(t);
 #endif
   }
-  else
+  else {
     DEBUG_PRINT("ERROR: cannot set RTC time");
+    syslog.log(LOG_ERR, "ERROR: cannot set RTC time");
+  }
 }
 
 void ManuallySetRTC()
@@ -430,6 +478,9 @@ void SyncWithGPS()
     DEBUG_PRINTLN(s);
     adjustTime(1);                     // 1pps signal = start of next second
     syncTime = now();                  // remember time of this sync
+    if (!gpsLocked) {
+      syslog.logf(LOG_INFO,"GPS sychronized - %d satellites", gps.satellites());
+    }
     gpsLocked = true;                  // set flag that time is reflects GPS time
     UpdateRTC();                       // update internal RTC clock periodically
     DEBUG_PRINTLN("GPS synchronized"); // send message to serial monitor
@@ -467,6 +518,9 @@ void SyncCheck()
   pps = 0;                           // reset 1-pulse-per-second flag, regardless
   if (timeSinceSync >= SYNC_TIMEOUT) // GPS sync has failed
   {
+    if (gpsLocked) {
+      syslog.log(LOG_INFO,"GPS sych lost!");
+    }
     gpsLocked = false; // flag that clock is no longer in GPS sync
     DEBUG_PRINTLN("Called SyncWithRTC from SyncCheck");
     SyncWithRTC(); // sync with RTC instead
@@ -534,6 +588,7 @@ void setup()
   {
     Rtc.SetIsRunning(true);
     DEBUG_PRINTLN(F("RTC had to be force started"));
+    syslog.log(LOG_WARNING, "RTC had to be force started");
   }
 
   DEBUG_PRINTLN(F("RTC started"));
@@ -581,6 +636,7 @@ void UpdateDisplay()
     ShowDateTime(t);    // Display the new UTC time
     ShowSyncFlag();     // show if display is in GPS sync
     u8g2.sendBuffer();  // Send new information to display
+    
     displayTime = t;    // save current display value
     DEBUG_PRINTLN("Called PrintTime from UpdateDisplay");
 #ifdef DEBUG
@@ -623,6 +679,8 @@ void processNTP()
     Udp.read(packetBuffer, NTP_PACKET_SIZE);
     IPAddress Remote = Udp.remoteIP();
     int PortNum = Udp.remotePort();
+
+    syslog.logf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
 
 #ifdef DEBUG
     Serial.println();
@@ -667,6 +725,7 @@ void processNTP()
     }
     Serial.println();
 
+    syslog.logf(LOG_INFO, "   Received UDP packet size %d  LI, Vers, Mode : 0x%02x  Stratum: 0x%02x  Polling: 0x%02x  Precision: 0x%02x", packetSize, LIVNMODE, STRATUM, POLLING, PRECISION);
 #endif
 
     packetBuffer[0] = 0b00100100; // LI, Version, Mode
