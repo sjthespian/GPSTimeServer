@@ -35,7 +35,7 @@ WiFiUDP Udp;
 
 // function prototypes
 void processWifi();             // Need to declare this for handleUpdate()
-
+void UpdateDisplay();
 
 // GLOBAL DEFINES
 #define HOSTNAME "ESP-NTP-Server" // Hostname used for syslog and DHCP
@@ -83,6 +83,8 @@ time_t dstStart = 0;       // start of DST in unix time
 time_t dstEnd = 0;         // end of DST in unix time
 bool gpsLocked = false;    // indicates recent sync with GPS
 int currentYear = 0;       // used for DST
+int displaynum = 0;        // Display pane currently displayed
+#define NUMDISPLAYPANES 2  // Number of display panes available
 
 long int pps_blink_time = 0;
 
@@ -305,6 +307,8 @@ void enableWifi()
   if (WiFi.status() == WL_CONNECTED) {
 #ifdef DEBUG
     IPAddress myIP = WiFi.localIP();
+    if (myIP[0] == 0)
+      myIP = WiFi.softAPIP();
     DEBUG_PRINTLN(F("WiFi connected!"));
     DEBUG_PRINT("IP address: ");
     DEBUG_PRINTLN(myIP);
@@ -543,6 +547,43 @@ void ShowSyncFlag()
   u8g2.drawStr(82, 16, resol.c_str());
 }
 
+void ShowWifiNetwork()
+{
+  u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
+  u8g2.drawGlyph(0, 43, 248);
+
+  int wrap = 38;
+  int ypos1 = 28;
+  int ypos2 = 43;
+  // Play games with the font and spacing based on the length of the SSID
+  if (wifissid.length() > 30) {
+    u8g2.setFont(u8g2_font_6x12_tf); // Small font for long SSID
+    wrap = 18;
+  } else if (wifissid.length() > 20) {
+    u8g2.setFont(u8g2_font_7x13_tf); // Not quite as small
+    wrap = 15;
+  } else if (wifissid.length() > 11) {
+    u8g2.setFont(u8g2_font_7x13_tf); // Not quite as small on one line
+    ypos1 = 43;
+  } else {
+    u8g2.setFont(u8g2_font_10x20_tf); // Readable on one line
+    ypos1 = 43;
+  }
+  u8g2.drawStr(16, ypos1, wifissid.substring(0,wrap).c_str());
+  if (wifissid.length() > 20)    // 2nd line needed if > 20
+    u8g2.drawStr(16, ypos2, wifissid.substring(wrap).c_str());
+}
+
+void ShowIPAddress()
+{
+    IPAddress myIP = WiFi.localIP();
+    if (myIP[0] == 0)
+      myIP = WiFi.softAPIP();
+  
+  u8g2.setFont(u8g2_font_logisoso16_tr); // choose a suitable font
+  u8g2.drawStr(0, 64, myIP.toString().c_str());
+}
+
 void InitLCD()
 {
   u8g2.begin(); // Initialize OLED library
@@ -660,6 +701,11 @@ void processKeyHold()
 void processKeyPress()
 {
   DEBUG_PRINTLN(F("BUTTON CLICK PROCESSED!"));
+  displaynum++;
+  if (displaynum >= NUMDISPLAYPANES) {
+    displaynum = 0;
+  }
+  UpdateDisplay();
 }
 
 void setup()
@@ -741,8 +787,16 @@ void UpdateDisplay()
   if (t != displayTime) // has time changed?
   {
     u8g2.clearBuffer(); // Clear buffer contents
-    ShowDateTime(t);    // Display the new UTC time
-    ShowSyncFlag();     // show if display is in GPS sync
+    switch(displaynum) {
+    case 0:
+      ShowDateTime(t);    // Display the new UTC time
+      ShowSyncFlag();     // show if display is in GPS sync
+      break;
+    case 1:
+      ShowWifiNetwork();
+      ShowIPAddress();
+      break;
+    }
     u8g2.sendBuffer();  // Send new information to display
     
     displayTime = t;    // save current display value
