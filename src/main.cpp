@@ -55,6 +55,11 @@ void processWifi();             // Need to declare this for handleUpdate()
 #define PPS_LED 10
 #define WIFI_LED D5
 #define WIFI_BUTTON D4
+#define BTN_HOLD_MS 3000       // Number of milliseconds to determine button being held
+#define BTN_NONE 0             // No button press
+#define BTN_PRESS 1            // Button pressed for < BTN_HOLD_MS
+#define BTN_HOLD 2             // Button held for at least BTN_HOLD_MS
+
 
 // INCLUDES
 #include <SoftwareSerial.h>
@@ -102,7 +107,8 @@ Syslog syslog(udpClient, SYSLOG_SERVER, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DA
 // use 150ms debounce time
 #define DEBOUNCE_TICKS 150
 
-word keytick = 0; // record time of keypress
+word keytick_down = 0; // record time of keypress
+word keytick_up = 0;
 
 #define DEBUG // Comment this in order to remove debug code from release version
 // #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
@@ -121,20 +127,30 @@ word keytick = 0; // record time of keypress
 
 // returns true if key pressed
 
-boolean KeyCheck()
-{
-  if (keytick != 0)
+int KeyCheck()
+{ 
+  // Button pressed and released
+  int button_type = 0;
+  if (keytick_up > 0 and ((keytick_up - keytick_down) > DEBOUNCE_TICKS))
   {
-    if ((millis() - keytick) > DEBOUNCE_TICKS)
+    DEBUG_PRINT(F("KEYTICKS: "));
+    DEBUG_PRINT(keytick_down);
+    DEBUG_PRINT("/");
+    DEBUG_PRINTLN(keytick_up);
+    if ((keytick_up - keytick_down) > BTN_HOLD_MS)
     {
-      DEBUG_PRINT(F("KEYTICK: "));
-      DEBUG_PRINTLN(keytick);
-      keytick = 0;
-      DEBUG_PRINTLN(F("KEYCHECK IS TRUE"));
-      return true;
+      button_type = BTN_HOLD;
+    } else {
+      button_type = BTN_PRESS;
     }
+    keytick_down = 0;
+    keytick_up = 0;
+    DEBUG_PRINT(F("KEYCHECK IS TRUE: "));
+    DEBUG_PRINTLN(button_type);
+    
+    return button_type;
   }
-  return false;
+  return BTN_NONE;
 }
 
 // littleFS routines
@@ -623,11 +639,14 @@ void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
 // Handle button pressed interrupt
 void IRAM_ATTR btw() // INTERRUPT SERVICE REQUEST
 {
-  keytick = millis();
+  if (digitalRead(WIFI_BUTTON) == HIGH)
+    keytick_up = millis();
+  else
+    keytick_down = millis();
   DEBUG_PRINTLN(F("BUTTON PRESSED!"));
 }
 
-void processKeypress()
+void processKeyHold()
 {
   if (statusWifi)
     statusWifi = 0;
@@ -635,6 +654,11 @@ void processKeypress()
     statusWifi = 1;
 
   processWifi();
+  DEBUG_PRINTLN(F("BUTTON HOLD PROCESSED!"));
+}
+
+void processKeyPress()
+{
   DEBUG_PRINTLN(F("BUTTON CLICK PROCESSED!"));
 }
 
@@ -687,7 +711,7 @@ void setup()
 #endif
   SyncWithRTC();                         // start clock with RTC data
   attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
-  attachInterrupt(WIFI_BUTTON, btw, FALLING);
+  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
 
   processWifi();
 
@@ -937,8 +961,14 @@ void loop()
   UpdateDisplay();                                    // if time has changed, display it
   if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
     digitalWrite(PPS_LED, LOW);
-  if (KeyCheck()) // Malabarism to cover mechanical switch debouncing
-    processKeypress();
+  switch(KeyCheck()) {
+  case BTN_HOLD: // Malabarism to cover mechanical switch debouncing
+    processKeyHold();
+    break;
+  case BTN_PRESS:
+    processKeyPress();
+    break;
+  }
   server.handleClient();
   processNTP();
 }
