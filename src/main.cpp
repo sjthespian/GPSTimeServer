@@ -7,6 +7,9 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 
+// State data
+#include <LittleFS.h>
+
 // For time on the web page
 #include <ctime>                // For formatting time
 
@@ -30,10 +33,12 @@ WiFiUDP Udp;
 #include <RtcUtility.h>
 #include <EepromAT24C32.h> // We will use clock's eeprom to store config
 
+// function prototypes
+void processWifi();             // Need to declare this for handleUpdate()
+
+
 // GLOBAL DEFINES
 #define HOSTNAME "ESP-NTP-Server" // Hostname used for syslog and DHCP
-#define WIFISSID "mywifi"      // Default WiFi SSID
-#define WIFIPSK "password"     // Default password
 #define WIFIRETRIES 15         // Max number of wifi retry attempts
 #define APSSID "GPSTimeServer" // Default AP SSID
 #define APPSK "thereisnospoon" // Default password
@@ -79,7 +84,8 @@ long int pps_blink_time = 0;
 /* Set these to your desired credentials. */
 const char *ssid = APSSID;
 const char *password = APPSK;
-
+String wifissid;
+String wifipassword;
 uint8_t statusWifi = 1;
 
 ESP8266WebServer server(80);
@@ -131,14 +137,72 @@ boolean KeyCheck()
   return false;
 }
 
-// WiFi Routines
-/* Just a little test message.  Go to http://192.168.4.1 in a web browser
-   connected to this access point to see it.
-*/
+// littleFS routines
+
+String readData(const char *filename)
+{
+  DEBUG_PRINT("Reading data from ");
+  DEBUG_PRINT(filename);
+  File file = LittleFS.open(filename, "r");
+
+  String data = "";
+  if (!file) {
+    DEBUG_PRINTLN("ERROR: File open failed!");
+  } else {
+
+    if (file.available())
+    {
+      data = file.readString();
+    }
+    DEBUG_PRINT(" : ");
+    DEBUG_PRINTLN(data);
+    
+    file.close();
+  }
+  
+  return data;
+}
+
+void writeData(const char* filename, String data)
+{
+  DEBUG_PRINT("Writing data to ");
+  DEBUG_PRINT(filename);
+  File file = LittleFS.open(filename, "w");
+
+  if (!file) {
+    DEBUG_PRINTLN("ERROR: File open failed!");
+  } else {
+    file.println(data);
+    DEBUG_PRINT(" : ");
+    DEBUG_PRINTLN(data);
+  }
+    
+    file.close();
+}
+
+
+// WiFi and Web Routines
+
+void handleUpdate()
+{
+  wifissid = server.arg("wifi_ssid");
+  wifipassword = server.arg("wifi_psk");
+  DEBUG_PRINTLN("WIFI Settings Updated!");
+  DEBUG_PRINTLN(wifissid);
+  //  DEBUG_PRINTLN(wifipassword);
+  // Save SSID and password in littlefs
+  writeData("/wifissid", wifissid);
+  writeData("/wifipsk",  wifipassword);
+  
+  processWifi();
+
+  String content = "<a href='/'>Return to main page</a>";
+  server.send(200, "text/html", content);
+}
 
 void handleRoot()
 {
-  char webpage[1024];
+  char webpage[2048];
   char timestr[32];
 
   // Build string for web UI
@@ -156,15 +220,27 @@ void handleRoot()
     gps.get_position(&lat, &lng);
   }
 
+  char form[512] = {0};
+  //  if (WiFi.getMode() == WIFI_AP) {
+  sprintf(form, "<hr/><h3>WiFi Settings</h3><form action=\"updatewifi\">SSID: <input type=\"text\" name=\"wifi_ssid\" value=\"%s\"><br/>Password: <input type=\"password\" name=\"wifi_psk\"><br/><input type=\"submit\"></form>", wifissid.c_str());
+  //  }
+  
   sprintf(webpage,
-          "<html><head><title>NTP Server</title><meta http-equiv=\"refresh\" content=\"5\";></head><body><h1>%s</h1>Satellites: %d  Resolution: %s<h3>Location</h3>Latitude: %7.4f, Longitude: %7.4f<br/></body></html>",
-          timestr, sats, resol.c_str(), (float)lat/1000000, (float)lng/1000000);
+          "<html><head><title>NTP Server</title></head><body><h1>%s</h1>Satellites: %d  Resolution: %s<h3>Location</h3>Latitude: %7.4f, Longitude: %7.4f<br/>%s</body></html>",
+          timestr,
+          sats,
+          resol.c_str(),
+          (float)lat/1000000,
+          (float)lng/1000000,
+          form
+          );
   server.send(200, "text/html", webpage);
 }
 
 void startHttpServer()
 {
   server.on("/", handleRoot);
+  server.on("/updatewifi", handleUpdate);
   server.begin();
   DEBUG_PRINTLN(F("HTTP server started"));
   syslog.log(LOG_INFO, "HTTP server started");
@@ -190,18 +266,24 @@ void enableWifiAP()
 
 void enableWifi()
 {
-  // Connect to WiFi
+  // Get SSID and password from littleFS
+  wifissid = readData("/wifissid"); 
+  wifipassword = readData("/wifipsk"); // Password follows
+
+// Connect to WiFi
   WiFi.setHostname(HOSTNAME);
   WiFi.mode(WIFI_STA);
   DEBUG_PRINTLN("Connecting to WiFI");
-  WiFi.begin(WIFISSID, WIFIPSK);
+  DEBUG_PRINTLN(wifissid);
+  //  DEBUG_PRINTLN(wifipassword);
+  WiFi.begin(wifissid, wifipassword);
   int retries = 0;
   while ((WiFi.status() != WL_CONNECTED) && (retries < WIFIRETRIES)) {
     retries++;
     delay(500);
     Serial.print(".");
   }
-  if (retries > WIFIRETRIES) {
+  if (retries >= WIFIRETRIES) {
     enableWifiAP();
   }
   if (WiFi.status() == WL_CONNECTED) {
@@ -572,8 +654,10 @@ void setup()
   Rtc.Begin();
   RtcEeprom.Begin();
 
+  LittleFS.begin();           // Init storage for WiFi SSID/PSK
+  
   InitLCD(); // initialize LCD display
-
+  
   ss.begin(9600); // set GPS baud rate to 9600 bps
 #ifdef DEBUG
   Serial.begin(9600); // set serial monitor rate to 9600 bps
@@ -729,9 +813,12 @@ void processNTP()
 #endif
 
     packetBuffer[0] = 0b00100100; // LI, Version, Mode
-    packetBuffer[1] = 1 ;   // stratum
+    if (gpsLocked) {
+      packetBuffer[1] = 1 ;   // stratum 1 if synced with GPS
+    } else {
+      packetBuffer[1] = 16 ;   // stratum 16 if not synced
+    }      
     //think that should be at least 4 or so as you do not use fractional seconds
-
     //packetBuffer[1] = 4;    // stratum
     packetBuffer[2] = 6;    // polling minimum
     packetBuffer[3] = 0xFA; // precision
@@ -766,10 +853,19 @@ void processNTP()
 
     tempval = timestamp;
 
-    packetBuffer[12] = 71; //"G";
-    packetBuffer[13] = 80; //"P";
-    packetBuffer[14] = 83; //"S";
-    packetBuffer[15] = 0;  //"0";
+    if (gpsLocked) {    
+      packetBuffer[12] = 71; //"G";
+      packetBuffer[13] = 80; //"P";
+      packetBuffer[14] = 83; //"S";
+      packetBuffer[15] = 0;  //"0";
+    } else {
+      // Set refid to IP address if not locked
+      IPAddress myIP = WiFi.localIP();
+      packetBuffer[12] = myIP[0]; 
+      packetBuffer[13] = myIP[1];
+      packetBuffer[14] = myIP[2];
+      packetBuffer[15] = myIP[3]; 
+    }
 
     // reference timestamp
     packetBuffer[16] = (tempval >> 24) & 0XFF;
