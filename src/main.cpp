@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <OneButton.h>
 
 // State data
 #include <LittleFS.h>
@@ -55,10 +56,6 @@ void UpdateDisplay();
 #define PPS_LED 10
 #define WIFI_LED D5
 #define WIFI_BUTTON D4
-#define BTN_HOLD_MS 3000       // Number of milliseconds to determine button being held
-#define BTN_NONE 0             // No button press
-#define BTN_PRESS 1            // Button pressed for < BTN_HOLD_MS
-#define BTN_HOLD 2             // Button held for at least BTN_HOLD_MS
 
 
 // INCLUDES
@@ -75,6 +72,7 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // 
 
 TinyGPS gps;
 SoftwareSerial ss(D7, D8); // Serial GPS handler
+OneButton btn;             // Button controller
 time_t displayTime = 0;    // time that is currently displayed
 time_t syncTime = 0;       // time of last GPS or RTC synchronization
 time_t lastSetRTC = 0;     // time that RTC was last set
@@ -144,35 +142,6 @@ word keytick_up = 0;
 #define DEBUG_PRINTCALL(x)
 #endif
 
-// Button ISR debouncing routine
-
-// returns true if key pressed
-
-int KeyCheck()
-{ 
-  // Button pressed and released
-  int button_type = 0;
-  if (keytick_up > 0 and ((keytick_up - keytick_down) > DEBOUNCE_TICKS))
-  {
-    DEBUG_PRINT(F("KEYTICKS: "));
-    DEBUG_PRINT(keytick_down);
-    DEBUG_PRINT("/");
-    DEBUG_PRINTLN(keytick_up);
-    if ((keytick_up - keytick_down) > BTN_HOLD_MS)
-    {
-      button_type = BTN_HOLD;
-    } else {
-      button_type = BTN_PRESS;
-    }
-    keytick_down = 0;
-    keytick_up = 0;
-    DEBUG_PRINT(F("KEYCHECK IS TRUE: "));
-    DEBUG_PRINTLN(button_type);
-    
-    return button_type;
-  }
-  return BTN_NONE;
-}
 
 // littleFS routines
 
@@ -689,16 +658,6 @@ void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
   DEBUG_PRINTLN("pps");
 }
 
-// Handle button pressed interrupt
-void IRAM_ATTR btw() // INTERRUPT SERVICE REQUEST
-{
-  if (digitalRead(WIFI_BUTTON) == HIGH)
-    keytick_up = millis();
-  else
-    keytick_down = millis();
-  DEBUG_PRINTLN(F("BUTTON PRESSED!"));
-}
-
 void processKeyHold()
 {
   if (statusWifi)
@@ -720,12 +679,22 @@ void processKeyPress()
   UpdateDisplay();
 }
 
+void InitButton()
+{
+  btn = OneButton( WIFI_BUTTON, true, true );
+
+  btn.attachClick(processKeyPress);
+  // btn.attachDoubleClick();
+  btn.attachLongPressStop(processKeyHold);
+
+}
+
 void setup()
 {
   pinMode(LOCK_LED, OUTPUT);
   pinMode(PPS_LED, OUTPUT);
   pinMode(WIFI_LED, OUTPUT);
-  pinMode(WIFI_BUTTON, INPUT_PULLUP);
+  //  pinMode(WIFI_BUTTON, INPUT_PULLUP);
 
   digitalWrite(LOCK_LED, LOW);
   digitalWrite(PPS_LED, LOW);
@@ -766,8 +735,8 @@ void setup()
 
   PrintRTCstatus(); // show RTC diagnostics
   SyncWithRTC();                         // start clock with RTC data
-  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
-  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
+  //  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
+  InitButton(); // initialize the button
 
   processWifi();
 
@@ -779,7 +748,7 @@ void FeedGpsParser()
 // feed currently available data from GPS module into tinyGPS parser
 {
   if (! ss.available())
-    DEBUG_PRINTLN("No GPS data available");
+    DEBUG_GPSLN("No GPS data available");
 
   while (ss.available()) // look for data from GPS module
   {
@@ -1027,15 +996,7 @@ void loop()
   UpdateDisplay();                                    // if time has changed, display it
   if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
     digitalWrite(PPS_LED, LOW);
-  DEBUG_PRINTCALL("Calling KeyCheck()...");
-  switch(KeyCheck()) {
-  case BTN_HOLD: // Malabarism to cover mechanical switch debouncing
-    processKeyHold();
-    break;
-  case BTN_PRESS:
-    processKeyPress();
-    break;
-  }
+  btn.tick();                                         // Check for button press
   DEBUG_PRINTCALL("Calling server.handleClient()...");
   server.handleClient();
   DEBUG_PRINTCALL("Calling Processntp()...");
