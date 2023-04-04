@@ -112,17 +112,36 @@ Syslog syslog(udpClient, SYSLOG_SERVER, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DA
 word keytick_down = 0; // record time of keypress
 word keytick_up = 0;
 
-#define DEBUG // Comment this in order to remove debug code from release version
-// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+//#define DEBUG // Comment this in order to remove *all* debug code from release version
+//#define DEBUG_GPS_DATA // Uncomment this to receive GPS messages in debug output
+//#define DEBUG_CALLS // Uncomment this to output function call info
 
+// Various DEBUG output statments based on the above
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
 #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
+#define DEBUG_PRINTHEX(x) Serial.print(x, HEX)
 #define DEBUG_PRINTLN(x) Serial.println(x)
+#ifdef DEBUG_GPS_DATA
+#define DEBUG_GPS(x) DEBUG_PRINT(x)
+#define DEBUG_GPSLN(x) DEBUG_PRINTLN(x)
+#else
+#define DEBUG_GPS(x)
+#define DEBUG_GPSLN(x)
+#endif
+#ifdef DEBUG_CALLS
+#define DEBUG_PRINTCALL(x) DEBUG_PRINTLN(x)
+#else
+#define DEBUG_PRINTCALL(x)
+#endif
 #else
 #define DEBUG_PRINT(x)
 #define DEBUG_PRINTDEC(x)
+#define DEBUG_PRINTHEX(x)
 #define DEBUG_PRINTLN(x)
+#define DEBUG_GPS(x)
+#define DEBUG_GPSLN(x)
+#define DEBUG_PRINTCALL(x)
 #endif
 
 // Button ISR debouncing routine
@@ -228,7 +247,7 @@ void handleRoot()
   tm *ptm = gmtime(&t);
   strftime(timestr, 32, "%Y-%m-%d %H:%M:%S UTC", ptm);
 
-  int sats = (gps.satellites() != 255) ? gps.satellites() : 0;
+  int sats = (gps.satellites() != TinyGPS::GPS_INVALID_SATELLITES) ? gps.satellites() : 0;
   String resol = gpsLocked ? String(gps.hdop()) : "";
 
   // latitude & longitude
@@ -273,12 +292,10 @@ void enableWifiAP()
   // Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
   WiFi.softAP(ssid, password, 1, 0, 8);
 
-  
-#ifdef DEBUG
   IPAddress myIP = WiFi.softAPIP();
   DEBUG_PRINT(F("AP IP address: "));
   DEBUG_PRINTLN(myIP);
-#endif
+
   startHttpServer();
 }
 
@@ -291,21 +308,22 @@ void enableWifi()
 // Connect to WiFi
   WiFi.setHostname(HOSTNAME);
   WiFi.mode(WIFI_STA);
-  DEBUG_PRINTLN("Connecting to WiFI");
-  DEBUG_PRINTLN(wifissid);
+  DEBUG_PRINT("Connecting to WiFI ");
+  DEBUG_PRINT(wifissid);
   //  DEBUG_PRINTLN(wifipassword);
   WiFi.begin(wifissid, wifipassword);
   int retries = 0;
   while ((WiFi.status() != WL_CONNECTED) && (retries < WIFIRETRIES)) {
     retries++;
     delay(500);
-    Serial.print(".");
+    DEBUG_PRINT(".");
   }
+  DEBUG_PRINTLN();
   if (retries >= WIFIRETRIES) {
     enableWifiAP();
   }
   if (WiFi.status() == WL_CONNECTED) {
-#ifdef DEBUG
+
     IPAddress myIP = WiFi.localIP();
     if (myIP[0] == 0)
       myIP = WiFi.softAPIP();
@@ -313,7 +331,7 @@ void enableWifi()
     DEBUG_PRINT("IP address: ");
     DEBUG_PRINTLN(myIP);
     syslog.logf(LOG_INFO, "WiFi connected as %s", myIP.toString().c_str());
-#endif
+
     startHttpServer();
   }
 }
@@ -363,6 +381,7 @@ void PrintDigit(int d)
 void PrintTime(time_t t)
 // display time and date to serial monitor
 {
+#ifdef DEBUG
   PrintDigit(month(t));
   DEBUG_PRINT("-");
   PrintDigit(day(t));
@@ -375,6 +394,7 @@ void PrintTime(time_t t)
   DEBUG_PRINT(":");
   PrintDigit(second(t));
   DEBUG_PRINTLN(" UTC");
+#endif
 }
 
 // --------------------------------------------------------------------------------------------------
@@ -385,20 +405,20 @@ void PrintTime(time_t t)
 void PrintRTCstatus()
 // send current RTC information to serial monitor
 {
+#ifdef DEBUG
   RtcDateTime Now = Rtc.GetDateTime();
   time_t t = Now.Epoch32Time();
   if (t)
   {
     DEBUG_PRINT("PrintRTCstatus: ");
     DEBUG_PRINTLN("Called PrintTime from PrintRTCstatus");
-#ifdef DEBUG
     PrintTime(t);
-#endif
   }
   else {
     DEBUG_PRINTLN("ERROR: cannot read the RTC.");
     syslog.log(LOG_ERR, "ERROR: cannot read the RTC.");
   }
+#endif
 }
 
 // Update RTC from current system time
@@ -413,9 +433,7 @@ void SetRTC(time_t t)
   {
     DEBUG_PRINT("SetRTC: ");
     DEBUG_PRINTLN("Called PrintTime from SetRTC");
-#ifdef DEBUG
     PrintTime(t);
-#endif
   }
   else {
     DEBUG_PRINT("ERROR: cannot set RTC time");
@@ -483,8 +501,6 @@ void ShowDate(time_t t)
 
   u8g2.setFont(u8g2_font_logisoso16_tf); // choose a suitable font
   u8g2.drawStr(18, 43, data.c_str());
-
-  DEBUG_PRINTLN("UpdateDisplay");
 }
 
 void ShowTime(time_t t)
@@ -522,7 +538,7 @@ void ShowDateTime(time_t t)
 void ShowSyncFlag()
 {
   String sats = "";
-  if (gps.satellites() != 255)
+  if (gps.satellites() != TinyGPS::GPS_INVALID_SATELLITES)
     sats = String(gps.satellites());
   else
     sats = "0";
@@ -532,11 +548,7 @@ void ShowSyncFlag()
   else
     digitalWrite(LOCK_LED, LOW);
 
-  String resol = "";
-  if (gpsLocked)
-    resol = String(gps.hdop());
-  else
-    resol = "0";
+  String resol = gpsLocked ? String(gps.hdop()) : "0";
 
   u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
   u8g2.drawGlyph(0, 16, 259);
@@ -752,9 +764,7 @@ void setup()
   Rtc.Enable32kHzPin(false);
   Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeNone);
 
-#ifdef DEBUG
   PrintRTCstatus(); // show RTC diagnostics
-#endif
   SyncWithRTC();                         // start clock with RTC data
   attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
   attachInterrupt(WIFI_BUTTON, btw, CHANGE);
@@ -768,14 +778,14 @@ void setup()
 void FeedGpsParser()
 // feed currently available data from GPS module into tinyGPS parser
 {
+  if (! ss.available())
+    DEBUG_PRINTLN("No GPS data available");
+
   while (ss.available()) // look for data from GPS module
   {
     char c = ss.read(); // read in all available chars
     gps.encode(c);      // and feed chars to GPS parser
-    //Serial.write(c); // Uncomment for some extra debug info if in doubt about GPS feed
-#ifdef DEBUG_GPS
-    DEBUG_PRINT(c);
-#endif
+    DEBUG_GPS(c);
   }
 }
 
@@ -800,10 +810,8 @@ void UpdateDisplay()
     u8g2.sendBuffer();  // Send new information to display
     
     displayTime = t;    // save current display value
-    DEBUG_PRINTLN("Called PrintTime from UpdateDisplay");
-#ifdef DEBUG
+    DEBUG_PRINTLN("Called PrintTime() from UpdateDisplay()");
     PrintTime(t); // copy time to serial monitor
-#endif
   }
 }
 
@@ -845,47 +853,48 @@ void processNTP()
     syslog.logf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
 
 #ifdef DEBUG
-    Serial.println();
-    Serial.print("Received UDP packet size ");
-    Serial.println(packetSize);
-    Serial.print("From ");
+    DEBUG_PRINTLN();
+    DEBUG_PRINT("Received UDP packet size ");
+    DEBUG_PRINTLN(packetSize);
+    DEBUG_PRINT("From ");
 
     for (int i = 0; i < 4; i++)
     {
-      Serial.print(Remote[i], DEC);
+      DEBUG_PRINTDEC(Remote[i]);
       if (i < 3)
       {
-        Serial.print(".");
+        DEBUG_PRINT(".");
       }
     }
-    Serial.print(", port ");
-    Serial.print(PortNum);
+    DEBUG_PRINT(", port ");
+    DEBUG_PRINT(PortNum);
 
     byte LIVNMODE = packetBuffer[0];
-    Serial.print("  LI, Vers, Mode :");
-    Serial.print(LIVNMODE, HEX);
+    DEBUG_PRINT("  LI, Vers, Mode :");
+    DEBUG_PRINTHEX(LIVNMODE);
 
     byte STRATUM = packetBuffer[1];
-    Serial.print("  Stratum :");
-    Serial.print(STRATUM, HEX);
+    DEBUG_PRINT("  Stratum :");
+    DEBUG_PRINTHEX(STRATUM);
 
     byte POLLING = packetBuffer[2];
-    Serial.print("  Polling :");
-    Serial.print(POLLING, HEX);
+    DEBUG_PRINT("  Polling :");
+    DEBUG_PRINTHEX(POLLING);
 
     byte PRECISION = packetBuffer[3];
-    Serial.print("  Precision :");
-    Serial.println(PRECISION, HEX);
+    DEBUG_PRINT("  Precision :");
+    DEBUG_PRINTHEX(PRECISION);
+    DEBUG_PRINTLN("");
 
     for (int z = 0; z < NTP_PACKET_SIZE; z++)
     {
-      Serial.print(packetBuffer[z], HEX);
+      DEBUG_PRINTHEX(packetBuffer[z]);
       if (((z + 1) % 4) == 0)
       {
-        Serial.println();
+        DEBUG_PRINTLN();
       }
     }
-    Serial.println();
+    DEBUG_PRINTLN();
 
     syslog.logf(LOG_INFO, "   Received UDP packet size %d  LI, Vers, Mode : 0x%02x  Stratum: 0x%02x  Polling: 0x%02x  Precision: 0x%02x", packetSize, LIVNMODE, STRATUM, POLLING, PRECISION);
 #endif
@@ -925,7 +934,7 @@ void processNTP()
     timestamp = t + seventyYears;
 
 #ifdef DEBUG
-    Serial.println(timestamp);
+    DEBUG_PRINTLN(timestamp);
     //print_date(gps);
 #endif
 
@@ -1010,11 +1019,15 @@ void processNTP()
 
 void loop()
 {
+  DEBUG_PRINTCALL("Calling FeedGPSParser()...");
   FeedGpsParser();                                    // decode incoming GPS data
+  DEBUG_PRINTCALL("Calling SyncCheck()...");
   SyncCheck();                                        // synchronize to GPS or RTC
+  DEBUG_PRINTCALL("Calling UpdateDisplay()...");
   UpdateDisplay();                                    // if time has changed, display it
   if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
     digitalWrite(PPS_LED, LOW);
+  DEBUG_PRINTCALL("Calling KeyCheck()...");
   switch(KeyCheck()) {
   case BTN_HOLD: // Malabarism to cover mechanical switch debouncing
     processKeyHold();
@@ -1023,6 +1036,10 @@ void loop()
     processKeyPress();
     break;
   }
+  DEBUG_PRINTCALL("Calling server.handleClient()...");
   server.handleClient();
+  DEBUG_PRINTCALL("Calling Processntp()...");
   processNTP();
+  DEBUG_PRINTCALL("End of main loop!");
+  DEBUG_PRINTCALL("");
 }
