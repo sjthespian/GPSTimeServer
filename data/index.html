@@ -1,0 +1,18 @@
+<html>
+  <head>
+    <title>NTP Server</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head>
+  <body>
+    <h1>%TIME%</h1>
+    Satellites: %SAT_COUNT%  Resolution: %SAT_RESOL%
+    <h3>Location</h3>
+    Latitude: %%LATITUDE% Longitude: %LONGITUDE%<br/>
+    <hr/>
+    <h3>WiFi Settings</h3>
+    <form action=\"updatewifi\">
+      SSID: <input type=\"text\" name=\"wifi_ssid\" value=\"%WIFISSID%\"><br/>
+      Password: <input type=\"password\" name=\"wifi_psk\"><br/>
+      <input type=\"submit\"></form>
+  </body>
+</html>"
