@@ -216,20 +216,21 @@ void handleRoot()
   tm *ptm = gmtime(&t);
   strftime(timestr, 32, "%Y-%m-%d %H:%M:%S UTC", ptm);
 
-  int sats = (gps.satellites() != TinyGPS::GPS_INVALID_SATELLITES) ? gps.satellites() : 0;
+  int sats = to_strgin((gps.satellites() != TinyGPS::GPS_INVALID_SATELLITES) ? gps.satellites() : 0);
+  String satCount;
   String resol = gpsLocked ? String(gps.hdop()) : "";
 
   // latitude & longitude
-  long lat = 0.0;
-  long lng = 0.0;
+  long lat = "0.0";
+  long lng = "0.0";
   if (gpsLocked) {
     gps.get_position(&lat, &lng);
   }
+  String latStr = to_string((float)lat/1000000);
+  String lngStr = to_string((float)lng/1000000);
 
   char form[512] = {0};
-  //  if (WiFi.getMode() == WIFI_AP) {
   sprintf(form, "<hr/><h3>WiFi Settings</h3><form action=\"updatewifi\">SSID: <input type=\"text\" name=\"wifi_ssid\" value=\"%s\"><br/>Password: <input type=\"password\" name=\"wifi_psk\"><br/><input type=\"submit\"></form>", wifissid.c_str());
-  //  }
   
   sprintf(webpage,
           "<html><head><title>NTP Server</title></head><body><h1>%s</h1>Satellites: %d  Resolution: %s<h3>Location</h3>Latitude: %7.4f, Longitude: %7.4f<br/>%s</body></html>",
